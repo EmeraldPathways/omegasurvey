@@ -1,4 +1,4 @@
-import { bindings, database, escapeHtml, randomToken, requireAdmin, sha256 } from "../../../../lib/server";
+import { bindings, database, ensureDefaultSurvey, escapeHtml, getSurvey, randomToken, requireAdmin, sha256 } from "../../../../lib/server";
 
 type RecipientRow = { id: string; first_name: string; last_name: string; email: string };
 
@@ -7,11 +7,16 @@ export async function POST(request: Request) {
   if (unauthorized) return unauthorized;
   const runtime = bindings();
   if (!runtime.RESEND_API_KEY || !runtime.SENDER_EMAIL) return Response.json({ error: "Email delivery is not configured. Add the Omega sender address and Resend API key first." }, { status: 503 });
-  const payload = await request.json().catch(() => ({})) as { mode?: "initial" | "reminder" };
+  const payload = await request.json().catch(() => ({})) as { mode?: "initial" | "reminder"; surveyId?: unknown };
   const mode = payload.mode === "reminder" ? "reminder" : "initial";
+  const surveyId = payload.surveyId === undefined ? 1 : Number(payload.surveyId);
+  if (!Number.isInteger(surveyId) || surveyId < 1) return Response.json({ error: "Choose a valid survey first." }, { status: 400 });
   const condition = mode === "reminder" ? "status IN ('sent', 'opened')" : "status = 'imported'";
   const db = database();
-  const rows = await db.prepare(`SELECT id, first_name, last_name, email FROM recipients WHERE survey_id = 1 AND ${condition} ORDER BY created_at LIMIT 500`).all<RecipientRow>();
+  await ensureDefaultSurvey(db);
+  const survey = await getSurvey(db, surveyId);
+  if (!survey) return Response.json({ error: "That survey could not be found." }, { status: 404 });
+  const rows = await db.prepare(`SELECT id, first_name, last_name, email FROM recipients WHERE survey_id = ? AND ${condition} ORDER BY created_at LIMIT 500`).bind(survey.id).all<RecipientRow>();
   const origin = runtime.PUBLIC_APP_URL?.replace(/\/$/, "") || new URL(request.url).origin;
   let sent = 0;
   let failed = 0;
@@ -20,8 +25,8 @@ export async function POST(request: Request) {
     const tokenHash = await sha256(token);
     const surveyUrl = `${origin}/survey/${token}`;
     const name = recipient.first_name ? escapeHtml(recipient.first_name) : "there";
-    const subject = mode === "reminder" ? "Reminder: we would value your feedback" : "We would value your feedback";
-    const introduction = mode === "reminder" ? "This is a friendly reminder about our short client experience survey." : "We would appreciate your feedback on your experience with Omega Financial.";
+    const subject = mode === "reminder" ? `Reminder: ${survey.title}` : survey.title;
+    const introduction = mode === "reminder" ? `This is a friendly reminder about your ${survey.title}.` : `We would appreciate your feedback through ${survey.title}.`;
     await db.prepare("UPDATE recipients SET token_hash = ?, last_error = NULL WHERE id = ?").bind(tokenHash, recipient.id).run();
     try {
       const response = await fetch("https://api.resend.com/emails", {

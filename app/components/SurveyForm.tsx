@@ -59,7 +59,7 @@ export default function SurveyForm({ token }: { token: string }) {
   return <main className="survey-shell">
     <header className="survey-header"><Logo /><span>Secure client survey</span></header>
     <div className="survey-progress"><span style={{ width: `${progress}%` }} /></div>
-    <section className="survey-intro"><span className="eyebrow">CLIENT EXPERIENCE</span><h1>We value your feedback{survey.firstName ? `, ${survey.firstName}` : ""}.</h1><p>This short survey should take approximately two minutes. Your feedback will help us continue to improve the service we provide.</p><div className="identity-notice"><span>i</span><p>Your responses are confidential within Omega Financial and are linked to the email address that received this invitation.</p></div></section>
+    <section className="survey-intro"><span className="eyebrow">CLIENT EXPERIENCE</span><h1>{survey.title}{survey.firstName ? `, ${survey.firstName}` : ""}.</h1><p>This short survey should take approximately two minutes. Your feedback will help us continue to improve the service we provide.</p><div className="identity-notice"><span>i</span><p>Your responses are confidential within Omega Financial and are linked to the email address that received this invitation.</p></div></section>
     <form className="survey-form" onSubmit={submit}>
       {survey.questions.map((question) => <fieldset key={question.id} className="survey-question">
         <legend><span>{String(question.number).padStart(2, "0")}</span><strong>{question.text}</strong>{!question.required && <small>Optional</small>}</legend>

@@ -18,11 +18,13 @@ type Recipient = {
   answers_json: string | null;
 };
 
+type QuestionType = "choice" | "scale" | "textarea";
+
 type Question = {
   id: string;
   number: number;
   text: string;
-  type: string;
+  type: QuestionType;
   options?: string[];
   min?: number;
   max?: number;
@@ -31,8 +33,12 @@ type Question = {
   required: boolean;
 };
 
+type SurveySummary = { id: number; title: string; status: string };
+
 type Overview = {
-  survey: { title: string; questions: Question[] };
+  surveys: SurveySummary[];
+  activeSurveyId: number;
+  survey: { id: number; title: string; questions: Question[] };
   stats: { total: number; imported: number; sent: number; opened: number; submitted: number };
   recipients: Recipient[];
   configuration: { emailReady: boolean; senderEmail: string | null };
@@ -50,6 +56,10 @@ function statusLabel(status: Recipient["status"]) {
   return { imported: "Ready", sent: "Sent", opened: "Opened", submitted: "Completed" }[status];
 }
 
+function questionTypeLabel(type: QuestionType) {
+  return type === "scale" ? "1–10 rating" : type === "textarea" ? "Long text" : "Single choice";
+}
+
 export default function AdminApp() {
   const [auth, setAuth] = useState<"loading" | "login" | "ready">("loading");
   const [password, setPassword] = useState("");
@@ -62,12 +72,19 @@ export default function AdminApp() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
+  const [surveyCreateOpen, setSurveyCreateOpen] = useState(false);
+  const [surveyEditorOpen, setSurveyEditorOpen] = useState(false);
+  const [newSurveyTitle, setNewSurveyTitle] = useState("");
+  const [draftSurveyId, setDraftSurveyId] = useState<number | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftQuestions, setDraftQuestions] = useState<Question[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const parsedPasteRows = useMemo(() => parsePastedRows(pasteText), [pasteText]);
   const rowsToImport = pendingRows.length > 0 ? pendingRows : parsedPasteRows;
 
-  const loadOverview = useCallback(async () => {
-    const response = await fetch("/api/admin/overview", { cache: "no-store" });
+  const loadOverview = useCallback(async (surveyId?: number) => {
+    const query = surveyId ? `?surveyId=${encodeURIComponent(surveyId)}` : "";
+    const response = await fetch(`/api/admin/overview${query}`, { cache: "no-store" });
     if (response.status === 401) { setAuth("login"); return; }
     if (!response.ok) throw new Error("The dashboard could not be loaded.");
     setOverview(await response.json());
@@ -81,6 +98,13 @@ export default function AdminApp() {
     return () => window.clearTimeout(timer);
   }, [loadOverview]);
 
+  useEffect(() => {
+    if (!overview || draftSurveyId === overview.activeSurveyId) return;
+    setDraftSurveyId(overview.activeSurveyId);
+    setDraftTitle(overview.survey.title);
+    setDraftQuestions(overview.survey.questions);
+  }, [overview, draftSurveyId]);
+
   async function login(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -93,7 +117,7 @@ export default function AdminApp() {
       return;
     }
     setPassword("");
-    await loadOverview();
+    await loadOverview(overview?.activeSurveyId);
   }
 
   async function logout() {
@@ -128,7 +152,7 @@ export default function AdminApp() {
       return;
     }
     setBusy(true);
-    const response = await fetch("/api/admin/recipients", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ recipients: rows }) });
+    const response = await fetch("/api/admin/recipients", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ surveyId: overview?.activeSurveyId, recipients: rows }) });
     const result = await response.json();
     setBusy(false);
     if (!response.ok) { setNotice(result.error ?? "The recipients could not be imported."); return; }
@@ -142,11 +166,75 @@ export default function AdminApp() {
   async function sendInvitations(mode: "initial" | "reminder") {
     setBusy(true);
     setNotice("");
-    const response = await fetch("/api/admin/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode }) });
+    const response = await fetch("/api/admin/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ surveyId: overview?.activeSurveyId, mode }) });
     const result = await response.json();
     setBusy(false);
     setNotice(response.ok ? `${result.sent} email${result.sent === 1 ? "" : "s"} sent${result.failed ? `; ${result.failed} failed` : ""}.` : result.error);
-    if (response.ok) await loadOverview();
+    if (response.ok) await loadOverview(overview?.activeSurveyId);
+  }
+
+  async function switchSurvey(surveyId: number) {
+    if (!surveyId || surveyId === overview?.activeSurveyId) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await loadOverview(surveyId);
+    } catch {
+      setNotice("That survey could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createSurvey(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setNotice("");
+    const response = await fetch("/api/admin/surveys", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: newSurveyTitle }) });
+    const result = await response.json().catch(() => ({}));
+    setBusy(false);
+    if (!response.ok) { setNotice(result.error ?? "The survey could not be created."); return; }
+    setSurveyCreateOpen(false);
+    setNewSurveyTitle("");
+    setActiveTab("Settings");
+    setSurveyEditorOpen(true);
+    setNotice("Survey created. Add or edit its questions below.");
+    await loadOverview(result.survey.id);
+  }
+
+  async function saveSurvey() {
+    if (!overview) return;
+    setBusy(true);
+    setNotice("");
+    const response = await fetch("/api/admin/surveys", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ surveyId: overview.activeSurveyId, title: draftTitle, questions: draftQuestions }) });
+    const result = await response.json().catch(() => ({}));
+    setBusy(false);
+    if (!response.ok) { setNotice(result.error ?? "The survey could not be saved."); return; }
+    setDraftTitle(result.survey.title);
+    setDraftQuestions(result.survey.questions);
+    setNotice("Survey changes saved.");
+    await loadOverview(overview.activeSurveyId);
+  }
+
+  function addQuestion() {
+    const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `question_${Date.now()}`;
+    setDraftQuestions((current) => [...current, { id, number: current.length + 1, text: "", type: "choice", options: ["Yes", "No"], required: true }]);
+  }
+
+  function updateQuestion(questionId: string, changes: Partial<Question>) {
+    setDraftQuestions((current) => current.map((question) => question.id === questionId ? { ...question, ...changes } : question));
+  }
+
+  function changeQuestionType(question: Question, type: QuestionType) {
+    const changes: Partial<Question> = { type, options: undefined, min: undefined, max: undefined, lowLabel: undefined, highLabel: undefined };
+    if (type === "choice") changes.options = question.options?.length ? question.options : ["Yes", "No"];
+    if (type === "scale") Object.assign(changes, { min: 1, max: 10, lowLabel: "Low", highLabel: "High" });
+    updateQuestion(question.id, changes);
+  }
+
+  function removeQuestion(questionId: string) {
+    if (draftQuestions.length <= 1) { setNotice("A survey needs at least one question."); return; }
+    setDraftQuestions((current) => current.filter((question) => question.id !== questionId).map((question, index) => ({ ...question, number: index + 1 })));
   }
 
   function exportResponses() {
@@ -178,11 +266,13 @@ export default function AdminApp() {
 
   if (!overview) return null;
   const responseRate = overview.stats.total ? Math.round((overview.stats.submitted / overview.stats.total) * 100) : 0;
+  const requiredQuestionCount = overview.survey.questions.filter((question) => question.required).length;
+  const optionalQuestionCount = overview.survey.questions.length - requiredQuestionCount;
 
   return <main className="admin-shell">
     <aside className="sidebar"><Logo /><nav aria-label="Dashboard navigation">{tabs.map((tab) => <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}><span className="nav-dot" />{tab}</button>)}</nav><div className="sidebar-footer"><span className="avatar">OF</span><div><strong>Omega Financial</strong><small>Administrator</small></div><button onClick={logout} aria-label="Sign out" title="Sign out">↗</button></div></aside>
     <section className="dashboard">
-      <header className="topbar"><div><span className="eyebrow">CLIENT EXPERIENCE</span><h1>{activeTab}</h1></div><div className="header-actions">{notice && <span className="notice" role="status">{notice}</span>}<button className="button secondary" onClick={() => setImportOpen(true)}>Add recipients</button><button className="button primary" onClick={() => sendInvitations("initial")} disabled={busy || !overview.configuration.emailReady || overview.stats.imported === 0}>Send invitations</button></div></header>
+      <header className="topbar"><div className="topbar-heading"><span className="eyebrow">CLIENT EXPERIENCE</span><h1>{activeTab}</h1><div className="survey-switcher"><label htmlFor="active-survey">Survey</label><select id="active-survey" value={overview.activeSurveyId} onChange={(event) => switchSurvey(Number(event.target.value))} disabled={busy}>{overview.surveys.map((survey) => <option key={survey.id} value={survey.id}>{survey.title}</option>)}</select><button className="text-button" onClick={() => setSurveyCreateOpen(true)}>New survey</button></div></div><div className="header-actions">{notice && <span className="notice" role="status">{notice}</span>}{activeTab === "Settings" && <button className="button secondary" onClick={() => setSurveyEditorOpen(true)}>Edit survey</button>}<button className="button secondary" onClick={() => setImportOpen(true)}>Add recipients</button><button className="button primary" onClick={() => sendInvitations("initial")} disabled={busy || !overview.configuration.emailReady || overview.stats.imported === 0}>Send invitations</button></div></header>
 
       {activeTab === "Overview" && <div className="content-grid">
         <section className="stats-grid" aria-label="Survey statistics"><article className="stat-card"><span>Recipients</span><strong>{overview.stats.total}</strong><small>{overview.stats.imported} ready to send</small></article><article className="stat-card"><span>Invitations sent</span><strong>{overview.stats.sent + overview.stats.opened + overview.stats.submitted}</strong><small>{overview.stats.opened} survey links opened</small></article><article className="stat-card accent"><span>Responses</span><strong>{overview.stats.submitted}</strong><small>{responseRate}% response rate</small></article><article className="stat-card"><span>Awaiting response</span><strong>{overview.stats.sent + overview.stats.opened}</strong><small>Eligible for a reminder</small></article></section>
@@ -199,6 +289,10 @@ export default function AdminApp() {
     </section>
 
     {importOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setImportOpen(false); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="import-title"><div className="modal-heading"><div><span className="eyebrow">RECIPIENTS</span><h2 id="import-title">Add your client list</h2></div><button onClick={() => setImportOpen(false)} aria-label="Close">×</button></div><p>Upload an Excel or CSV file, or paste rows in the order: first name, surname, email.</p><button className="upload-zone" onClick={() => fileRef.current?.click()}><span>↑</span><strong>Choose an Excel or CSV file</strong><small>.xlsx or .csv · up to 500 recipients</small></button><input ref={fileRef} hidden type="file" accept=".xlsx,.csv" onChange={(event) => event.target.files?.[0] && readFile(event.target.files[0])} /><div className="or"><span>or paste a list</span></div><textarea value={pasteText} onChange={(event) => { setPasteText(event.target.value); setPendingRows([]); setNotice(""); }} placeholder={'First Name,Surname,Email\nAoife,Byrne,aoife@example.ie'} rows={5} /><button className="text-button" onClick={parsePasted}>Check pasted list</button>{notice && <p className="modal-notice">{notice}</p>}{pendingRows.length > 0 && <div className="import-preview"><strong>Preview</strong>{pendingRows.slice(0, 3).map((row) => <span key={row.email}>{row.firstName} {row.lastName} · {row.email}</span>)}{pendingRows.length > 3 && <small>and {pendingRows.length - 3} more</small>}</div>}<div className="modal-actions"><button className="button secondary" onClick={() => setImportOpen(false)}>Cancel</button><button className="button primary" disabled={busy || rowsToImport.length === 0} onClick={importRecipients}>{busy ? "Adding…" : `Add ${rowsToImport.length || ""} recipients`}</button></div></section></div>}
+    {surveyEditorOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setSurveyEditorOpen(false); }}><section className="modal survey-editor-modal" role="dialog" aria-modal="true" aria-labelledby="survey-editor-title"><div className="modal-heading"><div><span className="eyebrow">QUESTIONNAIRE</span><h2 id="survey-editor-title">Edit survey</h2></div><button type="button" onClick={() => setSurveyEditorOpen(false)} aria-label="Close">×</button></div><p>Change the survey name, question wording, required state, and response type. Choice answers are entered one per line.</p><form onSubmit={(event) => { event.preventDefault(); void saveSurvey(); }}><label className="editor-field"><span>Survey name</span><input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} maxLength={160} required /></label><div className="question-editor-list">{draftQuestions.map((question, index) => <article className="question-editor" key={question.id}><div className="question-editor-heading"><span>{String(index + 1).padStart(2, "0")}</span><div><strong>Question {index + 1}</strong><button type="button" className="text-button" onClick={() => removeQuestion(question.id)} disabled={draftQuestions.length === 1}>Remove</button></div></div><label className="editor-field"><span>Question text</span><input value={question.text} onChange={(event) => updateQuestion(question.id, { text: event.target.value })} maxLength={500} required /></label><div className="editor-grid"><label className="editor-field"><span>Response type</span><select value={question.type} onChange={(event) => changeQuestionType(question, event.target.value as QuestionType)}><option value="choice">Single choice</option><option value="scale">1–10 rating</option><option value="textarea">Long text</option></select></label><label className="checkbox-field"><input type="checkbox" checked={question.required} onChange={(event) => updateQuestion(question.id, { required: event.target.checked })} /><span>Required response</span></label></div>{question.type === "choice" && <label className="editor-field"><span>Answer options</span><textarea value={(question.options ?? []).join("\n")} onChange={(event) => updateQuestion(question.id, { options: event.target.value.split(/\r?\n/) })} rows={4} placeholder={'Yes\nNo'} /><small>Use at least two options.</small></label>}{question.type === "scale" && <div className="editor-grid"><label className="editor-field"><span>Low label</span><input value={question.lowLabel ?? ""} onChange={(event) => updateQuestion(question.id, { lowLabel: event.target.value })} maxLength={80} /></label><label className="editor-field"><span>High label</span><input value={question.highLabel ?? ""} onChange={(event) => updateQuestion(question.id, { highLabel: event.target.value })} maxLength={80} /></label></div>}</article>)}</div><button type="button" className="button secondary add-question" onClick={addQuestion}>Add question</button><div className="modal-actions"><button type="button" className="button secondary" onClick={() => setSurveyEditorOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={busy}>{busy ? "Saving…" : "Save changes"}</button></div></form></section></div>}
+
+    {surveyCreateOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setSurveyCreateOpen(false); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="create-survey-title"><div className="modal-heading"><div><span className="eyebrow">SURVEYS</span><h2 id="create-survey-title">Create a survey</h2></div><button type="button" onClick={() => setSurveyCreateOpen(false)} aria-label="Close">×</button></div><p>Start with the standard questionnaire, then edit its questions and response types before adding recipients.</p><form onSubmit={createSurvey}><label className="editor-field"><span>Survey name</span><input value={newSurveyTitle} onChange={(event) => setNewSurveyTitle(event.target.value)} placeholder="e.g. Annual client experience survey" maxLength={160} required autoFocus /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={() => setSurveyCreateOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={busy}>{busy ? "Creating…" : "Create survey"}</button></div></form></section></div>}
+
   </main>;
 }
 

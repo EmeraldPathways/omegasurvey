@@ -1,8 +1,12 @@
+import { normalizeSurveyQuestions as normalizeQuestionsRuntime, normalizeSurveyTitle as normalizeTitleRuntime, parseStoredSurveyQuestions as parseStoredQuestionsRuntime } from "./survey-validation.mjs";
+
+export type SurveyQuestionType = "choice" | "scale" | "textarea";
+
 export type SurveyQuestion = {
   id: string;
   number: number;
   text: string;
-  type: "choice" | "scale" | "textarea";
+  type: SurveyQuestionType;
   options?: string[];
   min?: number;
   max?: number;
@@ -23,3 +27,15 @@ export const surveyQuestions: SurveyQuestion[] = [
   { id: "recommendation", number: 7, text: "How likely are you to recommend Omega Financial to others?", type: "scale", min: 1, max: 10, lowLabel: "Not likely", highLabel: "Extremely likely", required: true },
   { id: "improvements", number: 8, text: "How could Omega Financial improve its service to clients?", type: "textarea", required: false },
 ];
+
+export function normalizeSurveyTitle(value: unknown) {
+  return normalizeTitleRuntime(value);
+}
+
+export function normalizeSurveyQuestions(value: unknown): SurveyQuestion[] {
+  return normalizeQuestionsRuntime(value) as SurveyQuestion[];
+}
+
+export function parseStoredSurveyQuestions(value: string | null | undefined) {
+  return (parseStoredQuestionsRuntime(value) as SurveyQuestion[] | null) ?? surveyQuestions;
+}

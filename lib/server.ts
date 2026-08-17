@@ -1,4 +1,4 @@
-import { surveyQuestions, surveyTitle } from "./survey";
+import { normalizeSurveyTitle, parseStoredSurveyQuestions, surveyQuestions, surveyTitle, SurveyQuestion } from "./survey";
 
 type RuntimeBindings = {
   DB?: D1Database;
@@ -88,6 +88,21 @@ export async function ensureDefaultSurvey(db: D1Database) {
     schemaReady = true;
   }
   await db.prepare("INSERT OR IGNORE INTO surveys (id, title, questions_json, status) VALUES (1, ?, ?, 'active')").bind(surveyTitle, JSON.stringify(surveyQuestions)).run();
+}
+
+export type SurveyRow = { id: number; title: string; questions_json: string; status: string; created_at: string };
+
+export type SurveyDefinition = { id: number; title: string; questions: SurveyQuestion[]; status: string; created_at: string };
+
+export async function getSurvey(db: D1Database, id: number): Promise<SurveyDefinition | null> {
+  const row = await db.prepare("SELECT id, title, questions_json, status, created_at FROM surveys WHERE id = ? AND status != 'archived'").bind(id).first<SurveyRow>();
+  if (!row) return null;
+  return { id: Number(row.id), title: normalizeSurveyTitle(row.title), questions: parseStoredSurveyQuestions(row.questions_json), status: row.status, created_at: row.created_at };
+}
+
+export async function listSurveys(db: D1Database): Promise<SurveyDefinition[]> {
+  const rows = await db.prepare("SELECT id, title, questions_json, status, created_at FROM surveys WHERE status != 'archived' ORDER BY created_at ASC, id ASC").all<SurveyRow>();
+  return rows.results.map((row: SurveyRow) => ({ id: Number(row.id), title: normalizeSurveyTitle(row.title), questions: parseStoredSurveyQuestions(row.questions_json), status: row.status, created_at: row.created_at }));
 }
 
 export function randomToken() {
