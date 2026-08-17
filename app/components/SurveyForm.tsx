@@ -16,22 +16,25 @@ type Question = {
   required: boolean;
 };
 
-type SurveyData = { status: "active" | "submitted"; firstName: string; title: string; questions: Question[] };
+type SurveyData = { status: "active" | "submitted" | "preview"; firstName: string; title: string; questions: Question[] };
 
-export default function SurveyForm({ token }: { token: string }) {
+export default function SurveyForm({ token, previewSurveyId }: { token?: string; previewSurveyId?: number }) {
+  const preview = previewSurveyId !== undefined;
+  const endpoint = preview ? `/api/admin/surveys/preview?surveyId=${encodeURIComponent(previewSurveyId)}` : token ? `/api/survey/${encodeURIComponent(token)}` : "";
   const [survey, setSurvey] = useState<SurveyData | null>(null);
   const [answers, setAnswers] = useState<Record<string, string | number>>({});
   const [state, setState] = useState<"loading" | "active" | "submitting" | "submitted" | "invalid">("loading");
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch(`/api/survey/${encodeURIComponent(token)}`, { cache: "no-store" }).then(async (response) => {
+    if (!endpoint) { setState("invalid"); return; }
+    fetch(endpoint, { cache: "no-store" }).then(async (response) => {
       if (!response.ok) throw new Error();
       const data = await response.json() as SurveyData;
       setSurvey(data);
       setState(data.status === "submitted" ? "submitted" : "active");
     }).catch(() => setState("invalid"));
-  }, [token]);
+  }, [endpoint]);
 
   const progress = useMemo(() => {
     if (!survey) return 0;
@@ -42,6 +45,7 @@ export default function SurveyForm({ token }: { token: string }) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (preview || !token) return;
     setError("");
     setState("submitting");
     const response = await fetch(`/api/survey/${encodeURIComponent(token)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ answers }) });
@@ -52,15 +56,15 @@ export default function SurveyForm({ token }: { token: string }) {
   }
 
   if (state === "loading") return <main className="survey-shell"><div className="loader survey-loader" aria-label="Loading survey" /></main>;
-  if (state === "invalid") return <Message title="This survey link is not available" body="Please check that you opened the complete link from your Omega Financial email." />;
+  if (state === "invalid") return <Message title={preview ? "Preview unavailable" : "This survey link is not available"} body={preview ? "Sign in as an administrator to view this survey preview." : "Please check that you opened the complete link from your Omega Financial email."} />;
   if (state === "submitted") return <Message title="Thank you for your feedback" body="Your response has been received. We appreciate you taking the time to help us improve our service." success />;
   if (!survey) return null;
 
   return <main className="survey-shell">
-    <header className="survey-header"><Logo /><span>Secure client survey</span></header>
+    <header className="survey-header"><Logo /><span>{preview ? "Admin preview · Responses disabled" : "Secure client survey"}</span></header>
     <div className="survey-progress"><span style={{ width: `${progress}%` }} /></div>
-    <section className="survey-intro"><span className="eyebrow">CLIENT EXPERIENCE</span><h1>{survey.title}{survey.firstName ? `, ${survey.firstName}` : ""}.</h1><p>This short survey should take approximately two minutes. Your feedback will help us continue to improve the service we provide.</p><div className="identity-notice"><span>i</span><p>Your responses are confidential within Omega Financial and are linked to the email address that received this invitation.</p></div></section>
-    <form className="survey-form" onSubmit={submit}>
+    <section className="survey-intro"><span className="eyebrow">CLIENT EXPERIENCE</span><h1>{survey.title}{survey.firstName ? `, ${survey.firstName}` : ""}.</h1><p>This short survey should take approximately two minutes. Your feedback will help us continue to improve the service we provide.</p><div className="identity-notice"><span>i</span><p>{preview ? "This is a read-only preview. Responses are disabled and nothing will be saved." : "Your responses are confidential within Omega Financial and are linked to the email address that received this invitation."}</p></div></section>
+    <form className="survey-form" onSubmit={preview ? (event) => event.preventDefault() : submit}>
       {survey.questions.map((question) => <fieldset key={question.id} className="survey-question">
         <legend><span>{String(question.number).padStart(2, "0")}</span><strong>{question.text}</strong>{!question.required && <small>Optional</small>}</legend>
         {question.type === "choice" && <div className="choice-grid">{question.options?.map((option) => <label key={option} className={answers[question.id] === option ? "selected" : ""}><input type="radio" name={question.id} value={option} checked={answers[question.id] === option} onChange={() => setAnswers((current) => ({ ...current, [question.id]: option }))} required={question.required} /><span>{option}</span><b>✓</b></label>)}</div>}
@@ -68,9 +72,9 @@ export default function SurveyForm({ token }: { token: string }) {
         {question.type === "textarea" && <textarea name={question.id} value={String(answers[question.id] ?? "")} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} placeholder="Share any suggestions or comments…" rows={5} maxLength={3000} />}
       </fieldset>)}
       {error && <p className="form-error" role="alert">{error}</p>}
-      <div className="submit-row"><p>By submitting, you confirm that you are happy for Omega Financial to review this feedback.</p><button className="button primary" disabled={state === "submitting"}>{state === "submitting" ? "Submitting…" : "Submit feedback"}</button></div>
+      <div className="submit-row"><p>{preview ? "Preview mode — no response will be submitted." : "By submitting, you confirm that you are happy for Omega Financial to review this feedback."}</p><button type={preview ? "button" : "submit"} className="button primary" disabled={preview || state === "submitting"}>{preview ? "Preview only" : state === "submitting" ? "Submitting…" : "Submit feedback"}</button></div>
     </form>
-    <footer className="survey-footer"><p>OFM Financial Ltd T/A Omega Financial Management, regulated by the Central Bank of Ireland.</p><span>Secure survey · Your response is protected</span></footer>
+    <footer className="survey-footer"><p>OFM Financial Ltd T/A Omega Financial Management, regulated by the Central Bank of Ireland.</p><span>{preview ? "Admin preview · No response saved" : "Secure survey · Your response is protected"}</span></footer>
   </main>;
 }
 
