@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import readXlsxFile from "read-excel-file/browser";
+import { csvCells, parsePastedRows, rowsForImport, rowsFromGrid } from "../../lib/recipient-import.mjs";
 import Logo from "./Logo";
 
 type Recipient = {
@@ -40,35 +41,6 @@ type Overview = {
 type ImportRow = { firstName: string; lastName: string; email: string };
 const tabs = ["Overview", "Recipients", "Responses", "Settings"] as const;
 
-function csvCells(line: string) {
-  const cells: string[] = [];
-  let value = "";
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (character === '"' && quoted && line[index + 1] === '"') { value += '"'; index += 1; }
-    else if (character === '"') quoted = !quoted;
-    else if (character === "," && !quoted) { cells.push(value.trim()); value = ""; }
-    else value += character;
-  }
-  cells.push(value.trim());
-  return cells;
-}
-
-function rowsFromGrid(grid: unknown[][]): ImportRow[] {
-  if (!grid.length) return [];
-  const headers = grid[0].map((cell) => String(cell ?? "").trim().toLowerCase());
-  const emailIndex = headers.findIndex((header) => header.includes("email"));
-  const firstIndex = headers.findIndex((header) => header.includes("first"));
-  const lastIndex = headers.findIndex((header) => header.includes("surname") || header.includes("last"));
-  const start = emailIndex >= 0 ? 1 : 0;
-  return grid.slice(start).map((row) => ({
-    firstName: String(row[firstIndex >= 0 ? firstIndex : 0] ?? "").trim(),
-    lastName: String(row[lastIndex >= 0 ? lastIndex : 1] ?? "").trim(),
-    email: String(row[emailIndex >= 0 ? emailIndex : 2] ?? "").trim().toLowerCase(),
-  })).filter((row) => row.firstName.length > 0 && row.lastName.length > 0 && row.email.includes("@"));
-}
-
 function formatDate(value: string | null) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-IE", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(value));
@@ -91,6 +63,8 @@ export default function AdminApp() {
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const parsedPasteRows = useMemo(() => parsePastedRows(pasteText), [pasteText]);
+  const rowsToImport = pendingRows.length > 0 ? pendingRows : parsedPasteRows;
 
   const loadOverview = useCallback(async () => {
     const response = await fetch("/api/admin/overview", { cache: "no-store" });
@@ -131,7 +105,7 @@ export default function AdminApp() {
   async function readFile(file: File) {
     try {
       let grid: unknown[][];
-      if (file.name.toLowerCase().endsWith(".xlsx")) grid = await readXlsxFile(file);
+      if (file.name.toLowerCase().endsWith(".xlsx")) grid = (await readXlsxFile(file))[0]?.data ?? [];
       else grid = (await file.text()).split(/\r?\n/).filter(Boolean).map(csvCells);
       const rows = rowsFromGrid(grid);
       setPendingRows(rows);
@@ -142,15 +116,19 @@ export default function AdminApp() {
   }
 
   function parsePasted() {
-    const rows = rowsFromGrid(pasteText.split(/\r?\n/).filter(Boolean).map((line) => csvCells(line.replaceAll("\t", ","))));
+    const rows = parsePastedRows(pasteText);
     setPendingRows(rows);
     setNotice(rows.length ? `${rows.length} valid recipients found.` : "No valid email addresses were found.");
   }
 
   async function importRecipients() {
-    if (!pendingRows.length) return;
+    const rows = rowsForImport(pasteText, pendingRows);
+    if (!rows.length) {
+      setNotice("Add at least one valid recipient before importing.");
+      return;
+    }
     setBusy(true);
-    const response = await fetch("/api/admin/recipients", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ recipients: pendingRows }) });
+    const response = await fetch("/api/admin/recipients", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ recipients: rows }) });
     const result = await response.json();
     setBusy(false);
     if (!response.ok) { setNotice(result.error ?? "The recipients could not be imported."); return; }
@@ -220,7 +198,7 @@ export default function AdminApp() {
       {activeTab === "Settings" && <div className="settings-grid"><section className="panel page-panel"><div className="panel-heading"><div><span className="eyebrow">QUESTIONNAIRE</span><h2>Current survey</h2></div><span className="status-pill live">Active</span></div><div className="settings-questions">{overview.survey.questions.map((question) => <div key={question.id}><span>{question.number}</span><div><strong>{question.text}</strong><small>{question.required ? "Required" : "Optional"} · {question.type === "scale" ? "1–10 rating" : question.type === "textarea" ? "Long text" : "Single choice"}</small></div></div>)}</div></section><aside className="panel configuration-card"><span className="eyebrow">DELIVERY & SECURITY</span><h2>Configuration</h2><div className="config-row"><span className={overview.configuration.emailReady ? "config-icon ready" : "config-icon"}>✉</span><div><strong>Email delivery</strong><small>{overview.configuration.emailReady ? overview.configuration.senderEmail : "Not connected"}</small></div></div><div className="config-row"><span className="config-icon ready">✓</span><div><strong>Administrator access</strong><small>Password protected</small></div></div><div className="config-row"><span className="config-icon ready">⌁</span><div><strong>Response matching</strong><small>Secure unique links</small></div></div><p className="privacy-copy">Recipients are informed that their responses are linked to the email address that received the invitation.</p></aside></div>}
     </section>
 
-    {importOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setImportOpen(false); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="import-title"><div className="modal-heading"><div><span className="eyebrow">RECIPIENTS</span><h2 id="import-title">Add your client list</h2></div><button onClick={() => setImportOpen(false)} aria-label="Close">×</button></div><p>Upload an Excel or CSV file, or paste rows in the order: first name, surname, email.</p><button className="upload-zone" onClick={() => fileRef.current?.click()}><span>↑</span><strong>Choose an Excel or CSV file</strong><small>.xlsx or .csv · up to 500 recipients</small></button><input ref={fileRef} hidden type="file" accept=".xlsx,.csv" onChange={(event) => event.target.files?.[0] && readFile(event.target.files[0])} /><div className="or"><span>or paste a list</span></div><textarea value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder={'First Name,Surname,Email\nAoife,Byrne,aoife@example.ie'} rows={5} /><button className="text-button" onClick={parsePasted}>Check pasted list</button>{notice && <p className="modal-notice">{notice}</p>}{pendingRows.length > 0 && <div className="import-preview"><strong>Preview</strong>{pendingRows.slice(0, 3).map((row) => <span key={row.email}>{row.firstName} {row.lastName} · {row.email}</span>)}{pendingRows.length > 3 && <small>and {pendingRows.length - 3} more</small>}</div>}<div className="modal-actions"><button className="button secondary" onClick={() => setImportOpen(false)}>Cancel</button><button className="button primary" disabled={busy || pendingRows.length === 0} onClick={importRecipients}>{busy ? "Adding…" : `Add ${pendingRows.length || ""} recipients`}</button></div></section></div>}
+    {importOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setImportOpen(false); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="import-title"><div className="modal-heading"><div><span className="eyebrow">RECIPIENTS</span><h2 id="import-title">Add your client list</h2></div><button onClick={() => setImportOpen(false)} aria-label="Close">×</button></div><p>Upload an Excel or CSV file, or paste rows in the order: first name, surname, email.</p><button className="upload-zone" onClick={() => fileRef.current?.click()}><span>↑</span><strong>Choose an Excel or CSV file</strong><small>.xlsx or .csv · up to 500 recipients</small></button><input ref={fileRef} hidden type="file" accept=".xlsx,.csv" onChange={(event) => event.target.files?.[0] && readFile(event.target.files[0])} /><div className="or"><span>or paste a list</span></div><textarea value={pasteText} onChange={(event) => { setPasteText(event.target.value); setPendingRows([]); setNotice(""); }} placeholder={'First Name,Surname,Email\nAoife,Byrne,aoife@example.ie'} rows={5} /><button className="text-button" onClick={parsePasted}>Check pasted list</button>{notice && <p className="modal-notice">{notice}</p>}{pendingRows.length > 0 && <div className="import-preview"><strong>Preview</strong>{pendingRows.slice(0, 3).map((row) => <span key={row.email}>{row.firstName} {row.lastName} · {row.email}</span>)}{pendingRows.length > 3 && <small>and {pendingRows.length - 3} more</small>}</div>}<div className="modal-actions"><button className="button secondary" onClick={() => setImportOpen(false)}>Cancel</button><button className="button primary" disabled={busy || rowsToImport.length === 0} onClick={importRecipients}>{busy ? "Adding…" : `Add ${rowsToImport.length || ""} recipients`}</button></div></section></div>}
   </main>;
 }
 
