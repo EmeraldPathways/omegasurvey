@@ -1,4 +1,5 @@
 import { normalizeSurveyTitle, parseStoredSurveyQuestions, surveyQuestions, surveyTitle, SurveyQuestion } from "./survey";
+import { EmailTemplate, parseStoredEmailTemplate } from "./email-template";
 
 type RuntimeBindings = {
   DB?: D1Database;
@@ -78,31 +79,35 @@ let schemaReady = false;
 export async function ensureDefaultSurvey(db: D1Database) {
   if (!schemaReady) {
     await db.batch([
-      db.prepare("CREATE TABLE IF NOT EXISTS surveys (id integer PRIMARY KEY AUTOINCREMENT NOT NULL, title text NOT NULL, questions_json text NOT NULL, status text DEFAULT 'active' NOT NULL, created_at text DEFAULT CURRENT_TIMESTAMP NOT NULL)"),
+      db.prepare("CREATE TABLE IF NOT EXISTS surveys (id integer PRIMARY KEY AUTOINCREMENT NOT NULL, title text NOT NULL, questions_json text NOT NULL, email_template_json text, status text DEFAULT 'active' NOT NULL, created_at text DEFAULT CURRENT_TIMESTAMP NOT NULL)"),
       db.prepare("CREATE TABLE IF NOT EXISTS recipients (id text PRIMARY KEY NOT NULL, survey_id integer NOT NULL, first_name text NOT NULL, last_name text NOT NULL, email text NOT NULL, token_hash text, status text DEFAULT 'imported' NOT NULL, email_message_id text, last_error text, sent_at text, opened_at text, submitted_at text, reminder_count integer DEFAULT 0 NOT NULL, created_at text DEFAULT CURRENT_TIMESTAMP NOT NULL, FOREIGN KEY (survey_id) REFERENCES surveys(id))"),
       db.prepare("CREATE TABLE IF NOT EXISTS responses (id text PRIMARY KEY NOT NULL, recipient_id text NOT NULL, answers_json text NOT NULL, submitted_at text DEFAULT CURRENT_TIMESTAMP NOT NULL, FOREIGN KEY (recipient_id) REFERENCES recipients(id))"),
       db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS recipients_survey_email_unique ON recipients (survey_id, email)"),
       db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS recipients_token_hash_unique ON recipients (token_hash)"),
       db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS responses_recipient_unique ON responses (recipient_id)"),
     ]);
+    const surveyColumns = await db.prepare("PRAGMA table_info(surveys)").all<{ name: string }>();
+    if (!surveyColumns.results.some((column) => column.name === "email_template_json")) {
+      await db.prepare("ALTER TABLE surveys ADD COLUMN email_template_json text").run();
+    }
     schemaReady = true;
   }
   await db.prepare("INSERT OR IGNORE INTO surveys (id, title, questions_json, status) VALUES (1, ?, ?, 'active')").bind(surveyTitle, JSON.stringify(surveyQuestions)).run();
 }
 
-export type SurveyRow = { id: number; title: string; questions_json: string; status: string; created_at: string };
+export type SurveyRow = { id: number; title: string; questions_json: string; email_template_json: string | null; status: string; created_at: string };
 
-export type SurveyDefinition = { id: number; title: string; questions: SurveyQuestion[]; status: string; created_at: string };
+export type SurveyDefinition = { id: number; title: string; questions: SurveyQuestion[]; emailTemplate: EmailTemplate; status: string; created_at: string };
 
 export async function getSurvey(db: D1Database, id: number): Promise<SurveyDefinition | null> {
-  const row = await db.prepare("SELECT id, title, questions_json, status, created_at FROM surveys WHERE id = ? AND status != 'archived'").bind(id).first<SurveyRow>();
+  const row = await db.prepare("SELECT id, title, questions_json, email_template_json, status, created_at FROM surveys WHERE id = ? AND status != 'archived'").bind(id).first<SurveyRow>();
   if (!row) return null;
-  return { id: Number(row.id), title: normalizeSurveyTitle(row.title), questions: parseStoredSurveyQuestions(row.questions_json), status: row.status, created_at: row.created_at };
+  return { id: Number(row.id), title: normalizeSurveyTitle(row.title), questions: parseStoredSurveyQuestions(row.questions_json), emailTemplate: parseStoredEmailTemplate(row.email_template_json), status: row.status, created_at: row.created_at };
 }
 
 export async function listSurveys(db: D1Database): Promise<SurveyDefinition[]> {
-  const rows = await db.prepare("SELECT id, title, questions_json, status, created_at FROM surveys WHERE status != 'archived' ORDER BY created_at ASC, id ASC").all<SurveyRow>();
-  return rows.results.map((row: SurveyRow) => ({ id: Number(row.id), title: normalizeSurveyTitle(row.title), questions: parseStoredSurveyQuestions(row.questions_json), status: row.status, created_at: row.created_at }));
+  const rows = await db.prepare("SELECT id, title, questions_json, email_template_json, status, created_at FROM surveys WHERE status != 'archived' ORDER BY created_at ASC, id ASC").all<SurveyRow>();
+  return rows.results.map((row: SurveyRow) => ({ id: Number(row.id), title: normalizeSurveyTitle(row.title), questions: parseStoredSurveyQuestions(row.questions_json), emailTemplate: parseStoredEmailTemplate(row.email_template_json), status: row.status, created_at: row.created_at }));
 }
 
 export function randomToken() {

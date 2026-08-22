@@ -1,10 +1,12 @@
 import { database, ensureDefaultSurvey, getSurvey, requireAdmin } from "../../../../lib/server";
 import { normalizeSurveyQuestions, normalizeSurveyTitle, surveyQuestions } from "../../../../lib/survey";
+import { normalizeEmailTemplate } from "../../../../lib/email-template";
 
 type SurveyPayload = {
   surveyId?: number;
   title?: unknown;
   questions?: unknown;
+  emailTemplate?: unknown;
 };
 
 function validSurveyId(value: unknown) {
@@ -50,7 +52,8 @@ export async function PATCH(request: Request) {
     if (!current) return Response.json({ error: "That survey could not be found." }, { status: 404 });
     const title = payload.title === undefined ? current.title : normalizeSurveyTitle(payload.title);
     const questions = payload.questions === undefined ? current.questions : normalizeSurveyQuestions(payload.questions);
-    await db.prepare("UPDATE surveys SET title = ?, questions_json = ? WHERE id = ?").bind(title, JSON.stringify(questions), surveyId).run();
+    const emailTemplate = payload.emailTemplate === undefined ? current.emailTemplate : normalizeEmailTemplate(payload.emailTemplate);
+    await db.prepare("UPDATE surveys SET title = ?, questions_json = ?, email_template_json = ? WHERE id = ?").bind(title, JSON.stringify(questions), JSON.stringify(emailTemplate), surveyId).run();
     const survey = await getSurvey(db, surveyId);
     if (!survey) return Response.json({ error: "The survey could not be loaded after saving." }, { status: 500 });
     return Response.json({ survey });

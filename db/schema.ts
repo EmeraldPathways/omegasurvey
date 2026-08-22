@@ -5,6 +5,7 @@ export const surveys = sqliteTable("surveys", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   title: text("title").notNull(),
   questionsJson: text("questions_json").notNull(),
+  emailTemplateJson: text("email_template_json"),
   status: text("status").notNull().default("active"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

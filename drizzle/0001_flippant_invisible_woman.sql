@@ -1,0 +1,1 @@
+ALTER TABLE `surveys` ADD `email_template_json` text;

@@ -18,6 +18,7 @@ export async function POST(request: Request) {
   if (!survey) return Response.json({ error: "That survey could not be found." }, { status: 404 });
   const rows = await db.prepare(`SELECT id, first_name, last_name, email FROM recipients WHERE survey_id = ? AND ${condition} ORDER BY created_at LIMIT 500`).bind(survey.id).all<RecipientRow>();
   const origin = runtime.PUBLIC_APP_URL?.replace(/\/$/, "") || new URL(request.url).origin;
+  const logoUrl = `${origin}/omega-financial-logo-email.png`;
   let sent = 0;
   let failed = 0;
   for (const recipient of rows.results) {
@@ -25,8 +26,10 @@ export async function POST(request: Request) {
     const tokenHash = await sha256(token);
     const surveyUrl = `${origin}/survey/${token}`;
     const name = recipient.first_name ? escapeHtml(recipient.first_name) : "there";
-    const subject = mode === "reminder" ? `Reminder: ${survey.title}` : survey.title;
-    const introduction = mode === "reminder" ? `This is a friendly reminder about your ${survey.title}.` : `We would appreciate your feedback through ${survey.title}.`;
+    const template = survey.emailTemplate;
+    const subject = mode === "reminder" ? `Reminder: ${template.subject}` : template.subject;
+    const message = mode === "reminder" ? `This is a friendly reminder.\n\n${template.message}` : template.message;
+    const safeMessage = escapeHtml(message).replaceAll("\n", "<br>");
     await db.prepare("UPDATE recipients SET token_hash = ?, last_error = NULL WHERE id = ?").bind(tokenHash, recipient.id).run();
     try {
       const response = await fetch("https://api.resend.com/emails", {
@@ -37,8 +40,8 @@ export async function POST(request: Request) {
           to: [recipient.email],
           reply_to: runtime.REPLY_TO_EMAIL || undefined,
           subject,
-          text: `Hello ${recipient.first_name || "there"},\n\n${introduction}\n\nThe survey takes approximately two minutes. Your responses will be linked to the email address that received this invitation.\n\nComplete the survey: ${surveyUrl}\n\nOFM Financial Ltd T/A Omega Financial Management, regulated by the Central Bank of Ireland.`,
-          html: `<div style="background:#f5f2eb;padding:36px 16px;font-family:Arial,sans-serif;color:#172b3a"><div style="max-width:600px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e4ded2"><div style="background:#102f3d;color:#fff;padding:25px 32px;font-size:18px;letter-spacing:.08em"><b>Ω OMEGA</b> <span style="font-size:11px;opacity:.75">FINANCIAL</span></div><div style="padding:38px 32px"><p style="color:#b8753b;font-size:12px;letter-spacing:.14em;font-weight:bold">CLIENT EXPERIENCE</p><h1 style="font-size:28px;margin:10px 0 18px">We value your feedback</h1><p>Hello ${name},</p><p style="line-height:1.7;color:#52636d">${introduction} The survey takes approximately two minutes to complete.</p><p style="margin:30px 0"><a href="${surveyUrl}" style="display:inline-block;background:#b8753b;color:#fff;text-decoration:none;padding:14px 22px;border-radius:8px;font-weight:bold">Complete the survey</a></p><p style="font-size:12px;line-height:1.6;color:#71808a">Your responses will be linked to the email address that received this invitation.</p></div><div style="border-top:1px solid #eee8de;padding:22px 32px;font-size:11px;line-height:1.5;color:#71808a">OFM Financial Ltd T/A Omega Financial Management, regulated by the Central Bank of Ireland.</div></div></div>`,
+          text: `Hello ${recipient.first_name || "there"},\n\n${message}\n\n${template.buttonLabel}: ${surveyUrl}\n\n${template.responseNote}\n\nOFM Financial Ltd T/A Omega Financial Management, regulated by the Central Bank of Ireland.`,
+          html: `<div style="background:#f5f2eb;padding:36px 16px;font-family:Arial,sans-serif;color:#172b3a"><div style="max-width:600px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e4ded2"><div style="background:#102f3d;padding:22px 32px"><img src="${logoUrl}" width="220" alt="Omega Financial" style="display:block;width:220px;max-width:100%;height:auto;border:0"></div><div style="padding:38px 32px"><p style="color:#b8753b;font-size:12px;letter-spacing:.14em;font-weight:bold">${escapeHtml(template.eyebrow)}</p><h1 style="font-size:28px;margin:10px 0 18px">${escapeHtml(template.heading)}</h1><p>Hello ${name},</p><p style="line-height:1.7;color:#52636d">${safeMessage}</p><p style="margin:30px 0"><a href="${surveyUrl}" style="display:inline-block;background:#b8753b;color:#fff;text-decoration:none;padding:14px 22px;border-radius:8px;font-weight:bold">${escapeHtml(template.buttonLabel)}</a></p><p style="font-size:12px;line-height:1.6;color:#71808a">${escapeHtml(template.responseNote)}</p></div><div style="border-top:1px solid #eee8de;padding:22px 32px;font-size:11px;line-height:1.5;color:#71808a">OFM Financial Ltd T/A Omega Financial Management, regulated by the Central Bank of Ireland.</div></div></div>`,
         }),
       });
       const result = await response.json().catch(() => ({})) as { id?: string; message?: string };
